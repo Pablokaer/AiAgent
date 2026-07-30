@@ -113,17 +113,21 @@ def main():
         """query($key:String!,$ready:ID!){
              issues(filter:{ team:{ key:{ eq:$key } }, labels:{ id:{ eq:$ready } } }, first:50){
                nodes{ id identifier title description url
+                      state{ type }
                       labels{ nodes{ id name } } }
              }
            }""",
         {"key": team_key, "ready": ready_id},
     )["issues"]["nodes"]
 
+    closed_states = {"completed", "canceled"}
     dispatched = 0
     for it in issues:
         names = {l["name"] for l in it["labels"]["nodes"]}
         if working_label in names:
             continue  # already in progress
+        if (it.get("state") or {}).get("type") in closed_states:
+            continue  # already resolved / canceled
         repo_url = extract_repo(it.get("description"))
         if not repo_url:
             print(f"- {it['identifier']}: no Target-Repo found, skipping.")
