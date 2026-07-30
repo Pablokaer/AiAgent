@@ -1,0 +1,35 @@
+name: Orchestrator - poll Linear
+
+# Central orchestrator (Pattern B), cron trigger.
+# Every 15 min: find Linear issues in team AID labelled `ai-ready`, read the
+# Target-Repo from each, and dispatch orchestrator-work.yml for it.
+# Requires: secret LINEAR_API_KEY.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write      # needed to dispatch the worker workflow
+  contents: read
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Poll Linear and dispatch workers
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TEAM_KEY: AID
+          READY_LABEL: ai-ready
+          WORKING_LABEL: ai-working
+          WORK_WORKFLOW: orchestrator-work.yml
+          DISPATCH_REF: main
+        run: python scripts/orchestrator_poll.py

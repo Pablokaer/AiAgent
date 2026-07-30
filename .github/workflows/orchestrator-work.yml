@@ -1,0 +1,82 @@
+name: Orchestrator - work an issue
+
+# Runs the AI loop against a TARGET repository named in the issue.
+# Triggered by orchestrator-poll.yml (workflow_dispatch) or a Linear webhook
+# relay (repository_dispatch: work-linear-issue).
+# Requires secrets: ANTHROPIC_API_KEY, LINEAR_API_KEY, TARGET_REPOS_PAT
+#   (TARGET_REPOS_PAT = a PAT with Contents:write + Pull requests:write on the target repos)
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Linear issue identifier (e.g. AID-123)"
+        required: true
+        type: string
+      repo_url:
+        description: "Target repo URL (https://github.com/owner/name)"
+        required: true
+        type: string
+  repository_dispatch:
+    types: [work-linear-issue]
+
+permissions:
+  contents: read
+
+jobs:
+  work:
+    runs-on: ubuntu-latest
+    env:
+      ISSUE: ${{ github.event.inputs.issue || github.event.client_payload.issue }}
+      REPO_URL: ${{ github.event.inputs.repo_url || github.event.client_payload.repo_url }}
+    steps:
+      - name: Checkout orchestrator (this repo, for the .claude loop config)
+        uses: actions/checkout@v4
+        with:
+          path: orchestrator
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Clone target repo + inject loop config
+        env:
+          GH_PAT: ${{ secrets.TARGET_REPOS_PAT }}
+        run: |
+          set -euo pipefail
+          slug="${REPO_URL#https://github.com/}"; slug="${slug%.git}"
+          git clone "https://x-access-token:${GH_PAT}@github.com/${slug}.git" work
+          # Bring the AI loop into the target checkout if it does not have one.
+          cp -rn orchestrator/.claude work/.claude 2>/dev/null || true
+          [ -f work/CLAUDE.md ] || cp orchestrator/CLAUDE.md work/CLAUDE.md
+          # NOTE: .mcp.json is intentionally NOT copied — MCP OAuth is not usable
+          # in headless CI. The issue is provided as ISSUE.md instead.
+
+      - name: Fetch the Linear issue into work/ISSUE.md
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          ISSUE: ${{ env.ISSUE }}
+          OUT: work/ISSUE.md
+        run: python orchestrator/scripts/fetch_issue.py
+
+      - name: Run the AI loop (write -> test -> review -> PR)
+        working-directory: work
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.TARGET_REPOS_PAT }}
+        run: |
+          set -euo pipefail
+          git config user.name "ai-loop"
+          git config user.email "ai-loop@users.noreply.github.com"
+          claude -p "The Linear issue ${ISSUE} is described in ./ISSUE.md. Implement it by following the /fix-and-test procedure (steps 1-7), but SKIP the Linear fetch in step 0 and use ISSUE.md as the task source. Create the working branch, iterate until tests are green and the review is APPROVED, then commit, push the branch to origin, and open a PR into the base branch with 'Fixes ${ISSUE}' in the body." \
+            --permission-mode acceptEdits \
+            --dangerously-skip-permissions \
+            --allowedTools Read,Write,Edit,Bash,Grep,Glob \
+            --max-turns 30 \
+            --output-format json
