@@ -1,0 +1,59 @@
+name: Linear ticket on failure
+
+# Opens a Linear issue when CI fails or a PR review requests changes,
+# so the AI loop can pick it up and drive it to a fix.
+# Requires:
+#   secret LINEAR_API_KEY   (Linear personal API key)
+#   variable LINEAR_TEAM_ID (UUID of the target Linear team)
+
+on:
+  workflow_run:
+    workflows: ["CI - dev (fast gate)", "CI - integration (medium gate)", "CI - stable (slow gate)"]
+    types: [completed]
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  create-ticket:
+    runs-on: ubuntu-latest
+    if: >
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure') ||
+      (github.event_name == 'pull_request_review' && github.event.review.state == 'changes_requested')
+    steps:
+      - name: Compose context
+        id: ctx
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "title=CI failed: ${{ github.event.workflow_run.name }} (#${{ github.event.workflow_run.run_number }})" >> "$GITHUB_OUTPUT"
+            echo "url=${{ github.event.workflow_run.html_url }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "title=Changes requested on PR #${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+            echo "url=${{ github.event.pull_request.html_url }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create Linear issue
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          LINEAR_TEAM_ID: ${{ vars.LINEAR_TEAM_ID }}
+          TITLE: ${{ steps.ctx.outputs.title }}
+          URL: ${{ steps.ctx.outputs.url }}
+        run: |
+          curl -sS -X POST https://api.linear.app/graphql \
+            -H "Content-Type: application/json" \
+            -H "Authorization: $LINEAR_API_KEY" \
+            -d @- <<JSON
+          {
+            "query": "mutation IssueCreate(\$input: IssueCreateInput!) { issueCreate(input: \$input) { success issue { identifier url } } }",
+            "variables": {
+              "input": {
+                "teamId": "$LINEAR_TEAM_ID",
+                "title": "$TITLE",
+                "description": "Auto-created by GitHub Actions.\n\nSource: $URL\n\nHand to the AI loop with /fix-and-test."
+              }
+            }
+          }
+          JSON

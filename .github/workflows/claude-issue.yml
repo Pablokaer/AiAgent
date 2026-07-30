@@ -1,0 +1,44 @@
+name: Claude - work a Linear issue
+
+# Manually (or programmatically) trigger the AI loop for a given issue.
+# The loop creates a working branch, implements + tests, and opens a PR into dev.
+# Trigger via the Actions tab (workflow_dispatch) or repository_dispatch from a
+# scheduled routine / Linear automation.
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Linear issue id (e.g. AID-123) or free-text task"
+        required: true
+        type: string
+  repository_dispatch:
+    types: [work-linear-issue]
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  work:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.x'
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: "Run /fix-and-test ${{ github.event.inputs.issue || github.event.client_payload.issue }}"
+          # 'Mais permissivo' autonomy — isolated CI runner only.
+          claude_args: >-
+            --max-turns 20
+            --permission-mode acceptEdits
+            --dangerously-skip-permissions
+            --allowedTools Read,Write,Edit,Bash,Grep,Glob
