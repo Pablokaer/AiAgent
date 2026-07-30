@@ -33,3 +33,5 @@ __pycache__/
 ## Orchestrator runtime
 work/
 ISSUE.md
+
+.claude/settings.local.json
