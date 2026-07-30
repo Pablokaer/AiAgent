@@ -1,59 +1,38 @@
-# Project: AIFinperiti
+# Orchestrator (AI development loop)
 
-AI-driven development workflow repository. Claude Code writes → reviews → tests → ships
-C#/.NET code through branch-based promotion gates, tracked in Linear and deployed to Azure.
+This repository is **only the brain**. It contains no product code. Its job is to
+fetch the next ready issue from Linear, run an AI loop that implements what the issue
+describes, and deliver the result (a PR, or a direct push) to the **target repository
+named in that issue**.
 
-## Stack
+## How it works
 
-- .NET 10 (LTS) / C# (latest)
-- ASP.NET Core Web API — `AIFinperiti.Api`
-- Testing: xUnit + Moq — `AIFinperiti.Api.Tests`
-- EF Core (add when persistence is introduced)
-
-## Layout
-
-```
-AIFinperiti.sln
-Directory.Build.props        # shared build settings (net10.0, nullable, warnings-as-errors)
-src/
-  AIFinperiti.Api/           # Web API
-  AIFinperiti.Api.Tests/     # xUnit tests
-```
+1. An issue lives in Linear (team **AID**), labelled **`ai-ready`**, and its description
+   contains a line `Target-Repo: https://github.com/<owner>/<name>`.
+2. The loop clones that target repo, detects its stack, implements the change, runs the
+   project's checks until green, reviews, and opens a PR with `Fixes AID-<n>` (or pushes
+   directly if the issue asks for it).
+3. This repo never receives the product changes — only the target repo does.
 
 ## Commands
 
-| Command | Purpose |
-| --- | --- |
-| `dotnet build` | Compile the solution |
-| `dotnet test` | Run all tests |
-| `dotnet format` | Apply formatting/style fixes |
-| `dotnet format --verify-no-changes` | Fail if formatting is needed (used in CI) |
+- `/next-issue` — fetch the next ready issue from Linear and run the loop on its target.
+- `/work-issue <id> [repo-url]` — run the loop for a specific issue against its repo.
 
-## Rules before committing
+## Subagents (stack-agnostic)
 
-1. All tests pass (`dotnet test`).
-2. `dotnet format` applied — zero analyzer warnings (build treats warnings as errors).
-3. Coverage must not drop.
-4. Smallest possible diff for the requested change.
+- `coder` — detects the stack (.NET / Node / Python / static HTML) and implements the issue.
+- `test-runner` — runs the project's tests/checks (or a well-formedness check for static sites).
+- `code-reviewer` — reviews the diff against the acceptance criteria; must say `APPROVED`.
 
-## Conventions
+## Issue convention
 
-- `PascalCase` for public members, `_camelCase` for private fields.
-- XML docs on all public API surface.
-- One type per file; namespace matches folder path.
-- Prefer constructor injection; register services in `Program.cs`.
+- Team **AID**, label **`ai-ready`** (swapped to `ai-working` once picked up).
+- A `Target-Repo:` line (or a github.com URL) in the description.
+- The loop closes the issue via the magic word `Fixes AID-<n>` on merge to the target's default branch.
 
-## Branch flow (promotion gates)
+## Notes
 
-`dev` (fast) → `integration` (medium) → `stable` (slow) → `main` (deploy to Azure).
-
-Work on a Linear issue happens on a dedicated branch (see below), which is PR'd into `dev`.
-
-## Working an issue
-
-Each Linear issue gets its own working branch, named `<team-key>-<number>-<slug>`
-(e.g. `aid-123-fix-health-endpoint`). Use the `/fix-and-test` command to drive the
-cycle. Reference the issue in the PR body with a magic word so it closes on merge:
-`Fixes AID-123`.
-
-> The Linear magic-word prefix must match the real team key. See `SETUP.md`.
+- The loop runs where `claude` starts (this repo, so `.claude/` loads); it clones the
+  target into `./work` and operates there.
+- The target repo must be one where the configured token has write access.

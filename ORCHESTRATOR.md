@@ -1,48 +1,54 @@
-# Central Orchestrator (Pattern B)
+# Orchestrator setup & operation
 
-This repo (`AiAgent`) is the **brain**. It doesn't hold your product code — it holds
-the AI loop (`.claude/`) and the automation that drives issues to merged PRs on
-**other** repositories. Each Linear issue says which repo to work on.
+`AiAgent` is the brain. It never holds product code — it drives issues to PRs on
+**other** repositories, one per issue.
 
 ## The self-moving cycle
 
 ```
-Linear issue (team AID, label: ai-ready, description has "Target-Repo: <url>")
+Linear issue (team AID, label: ai-ready, description: "Target-Repo: <url>")
         │
         ▼
 orchestrator-poll.yml   (cron every 15 min)
-   · scripts/orchestrator_poll.py queries Linear for ai-ready issues
-   · reads Target-Repo from each issue
-   · dispatches orchestrator-work.yml (issue + repo_url)
-   · swaps label ai-ready -> ai-working  (so it's not picked up twice)
+   · orchestrator_poll.py finds ai-ready issues (not ai-working)
+   · reads Target-Repo, dispatches orchestrator-work.yml (issue + repo_url)
+   · swaps label ai-ready -> ai-working
         │
         ▼
 orchestrator-work.yml
-   · checks out THIS repo for the .claude loop config
-   · clones the TARGET repo (auth via TARGET_REPOS_PAT)
-   · injects .claude/ + CLAUDE.md into the target checkout
-   · fetch_issue.py writes work/ISSUE.md (no MCP OAuth needed in CI)
-   · claude -p runs /fix-and-test: coder -> test -> review, loop until green
-   · commits, pushes a branch to the target repo, opens a PR "Fixes AID-123"
+   · checks out THIS repo (loads .claude + scripts)
+   · fetch_issue.py writes ISSUE.md
+   · claude -p "/work-issue <id> <repo_url>"
+        - clones the TARGET repo into ./work
+        - coder (detects stack) -> test-runner -> code-reviewer, loop until green + APPROVED
+        - commit, push branch to the target, open PR "Fixes AID-<n>"
         │
         ▼
-Target repo's own gates (dev -> integration -> stable -> main) run;
-on merge to main the native GitHub<->Linear integration closes the issue.
-If CI fails / PR rejected -> linear-on-review.yml opens a new issue -> back to poll.
+merge on the target repo -> GitHub<->Linear closes the issue.
 ```
 
-The only recurring human input is **creating and prioritizing issues in Linear**.
+Only recurring human input: **create & prioritize issues in Linear**.
 
-## Issue convention (required for Pattern B)
+## Issue convention (required)
 
-Every issue the loop should pick up must:
+Each issue the loop should pick up must:
 1. Belong to team **AID**.
 2. Carry the label **`ai-ready`**.
-3. Contain a line in the description:
+3. Contain in its description:
    ```
    Target-Repo: https://github.com/<owner>/<name>
    ```
-   (If absent, the poller uses the first github.com URL it finds; if none, it skips.)
+   (Otherwise the first github.com URL is used; if none, the issue is skipped.)
+4. Optionally state "commit directly" if you want a direct push instead of a PR.
+
+## Stack-agnostic loop
+
+The subagents detect the target's stack and act accordingly:
+- `.sln`/`.csproj` → .NET (`dotnet build`/`test`/`format`)
+- `package.json` → Node (`npm test` / build)
+- `pyproject.toml`/`requirements.txt` → Python (`pytest`)
+- only static `*.html` → no build; HTML well-formedness check
+The worker image has .NET 10, Node 20 and Python 3.12 preinstalled; extend it for other stacks.
 
 ## One-time setup
 
@@ -50,29 +56,30 @@ Every issue the loop should pick up must:
 | Secret | Purpose |
 | --- | --- |
 | `ANTHROPIC_API_KEY` | Runs Claude in the worker |
-| `LINEAR_API_KEY` | Poller + issue fetch |
-| `TARGET_REPOS_PAT` | PAT with **Contents: write** + **Pull requests: write** on every target repo (and org-approved if they're org repos) |
+| `LINEAR_API_KEY` | Poll + issue fetch |
+| `TARGET_REPOS_PAT` | PAT with **Contents: write** + **Pull requests: write** on every target repo (org-approved if they're org repos) |
 
-> `GITHUB_TOKEN` is used by the poller to dispatch the worker — no secret needed for that.
+`GITHUB_TOKEN` (automatic) lets the poller dispatch the worker — no secret needed.
 
 **Linear labels**: create `ai-ready` and `ai-working` in team AID.
 
-**Target repos**: for the promotion gates to apply, each target repo should carry the
-same branch model (`dev`/`integration`/`stable`/`main`) and the CI workflows. If a
-target has no `dev`, adjust the PR base or add the branches.
+**Enable Actions** on this repo (workflows run from `main`).
 
-## Turning it on
+## Running it
 
-1. Add the three secrets and the two labels.
-2. Enable Actions on this repo (workflows run from `main`).
-3. Create a Linear issue with the `ai-ready` label and a `Target-Repo:` line.
-4. Wait for the cron (or run **orchestrator-poll** manually from the Actions tab).
-   You can also run **orchestrator-work** manually, passing `issue` + `repo_url`.
+- **Autonomous:** just create `ai-ready` issues with a `Target-Repo:` line. The cron
+  (or a manual run of **orchestrator-poll**) does the rest.
+- **One issue by hand (cloud):**
+  ```
+  gh workflow run orchestrator-work.yml --repo <owner>/AiAgent --ref main \
+    -f issue=AID-1 -f repo_url=https://github.com/<owner>/<target>
+  ```
+- **Locally (testing):** open Claude Code in this repo and run `/next-issue`
+  or `/work-issue AID-1 <repo-url>`. Needs `gh` authenticated and the Linear MCP connected.
 
 ## Upgrade to event-driven (optional)
 
-Cron polling has up to ~15 min latency. To react instantly, add a Linear webhook that,
-on issue label/state change, calls GitHub's `repository_dispatch` with event type
-`work-linear-issue` and payload `{ "issue": "...", "repo_url": "..." }`. `orchestrator-work.yml`
-already listens for that event. Because Linear webhooks can't call GitHub directly, put a
-tiny relay (Cloudflare Worker / Azure Function) in between, or use a Linear automation/agent.
+To react instantly instead of polling, add a Linear webhook that calls GitHub's
+`repository_dispatch` with type `work-linear-issue` and payload `{issue, repo_url}`.
+`orchestrator-work.yml` already listens for it. Linear can't call GitHub directly, so put
+a tiny relay (Cloudflare Worker / Azure Function) in between.

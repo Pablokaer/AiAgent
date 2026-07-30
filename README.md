@@ -1,35 +1,40 @@
-# employees-pablo3 (AIFinperiti)
+# AiAgent — AI development loop orchestrator
 
-Claude-driven development workflow: an AI loop that **writes → reviews → tests → ships**
-C#/.NET code through branch-based promotion gates, tracked in Linear and deployed to Azure.
+The **brain** of a Claude-driven workflow. It pulls issues from Linear, runs a
+write → test → review loop, and opens a PR on the **repository named in each issue**.
+No product code lives here.
 
-## Branch flow
+## The cycle
 
 ```
-dev ──(fast)──► integration ──(medium)──► stable ──(slow)──► main ──► Azure
+Linear issue (team AID, label: ai-ready, description: "Target-Repo: <url>")
+        │
+        ▼
+poll (cron)  ──►  orchestrator-work.yml
+                    · clone the target repo
+                    · coder → test-runner → code-reviewer  (loop until green + APPROVED)
+                    · commit → push branch → PR "Fixes AID-1"  (on the target repo)
+        │
+        ▼
+merge on the target → Linear closes the issue
 ```
 
-- **dev** — build, format check, unit tests
-- **integration** — + integration tests
-- **stable** — + full suite + dependency vulnerability scan
-- **main** — deploy to Azure App Service (with environment approval)
+## Run it
 
-Each Linear issue is worked on its own branch and merged via `Fixes AID-123`.
+**Autonomously (cloud):** the `orchestrator-poll.yml` cron picks up ready issues and
+dispatches `orchestrator-work.yml`. Or trigger a single issue by hand:
 
-## Quick start
-
-```bash
-dotnet restore
-dotnet build
-dotnet test
-dotnet run --project src/AIFinperiti.Api   # GET /health -> "OK"
+```
+gh workflow run orchestrator-work.yml --repo <owner>/AiAgent --ref main \
+  -f issue=AID-1 -f repo_url=https://github.com/<owner>/<target>
 ```
 
-## AI loop
+**Locally (for testing):** open Claude Code in this repo and run:
 
-- `.claude/agents/` — `dotnet-coder`, `code-reviewer`, `test-runner`
-- `.claude/commands/fix-and-test.md` — orchestrates the loop for an issue
-- `.claude/commands/bug-scan.md` — finds a bug and opens a Linear issue
-- `.claude/hooks/` — block commit/push without passing tests; auto-format after edits
+```
+/next-issue                 # next ready issue from Linear
+# or
+/work-issue AID-1 https://github.com/<owner>/<target>
+```
 
-See **SETUP.md** for the one-time configuration (secrets, Linear team, Azure, branch protection).
+See `ORCHESTRATOR.md` for the one-time setup (secrets, labels, issue convention).
